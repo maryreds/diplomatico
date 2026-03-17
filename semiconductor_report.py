@@ -1,8 +1,9 @@
 """
-semiconductor_report.py — Special Report: Mexico's Semiconductor Industry
+semiconductor_report.py — Daily Semiconductor Intelligence Report
 
-One-shot intelligence report on Mexico's semiconductor ecosystem:
-companies, states, government policy, and Mexico-Malaysia bilateral opportunities.
+Fetches fresh semiconductor news (Mexico, nearshoring, global chip industry)
+and combines it with background research data to produce a daily intelligence
+briefing on Mexico's semiconductor ecosystem and Mexico-Malaysia opportunities.
 
 Usage:
     python3 semiconductor_report.py              # Generate and send email
@@ -14,12 +15,14 @@ import json
 import os
 import re
 import smtplib
-from datetime import datetime
+from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 
 import anthropic
+import feedparser
+import requests
 from dotenv import load_dotenv
 from jinja2 import Environment, FileSystemLoader
 
@@ -32,7 +35,133 @@ OUTPUT_DIR.mkdir(exist_ok=True)
 
 TODAY = datetime.now().strftime("%B %d, %Y")
 TODAY_ISO = datetime.now().strftime("%Y-%m-%d")
+YESTERDAY_ISO = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
 
+
+# ── Live News Fetching ────────────────────────────────────────────────────────
+
+GOOGLE_NEWS_FEEDS = [
+    # Mexico + semiconductors
+    "https://news.google.com/rss/search?q=Mexico+semiconductor&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=Mexico+semiconductores&hl=es&gl=MX&ceid=MX:es",
+    "https://news.google.com/rss/search?q=Mexico+chip+manufacturing+OR+nearshoring&hl=en&gl=US&ceid=US:en",
+    # Key companies in Mexico
+    "https://news.google.com/rss/search?q=Foxconn+Nvidia+Mexico+OR+Jalisco&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=Intel+Guadalajara+OR+Skyworks+Mexicali&hl=en&gl=US&ceid=US:en",
+    # Mexico semiconductor policy
+    "https://news.google.com/rss/search?q=Mexico+Kutsari+OR+%22Plan+Mexico%22+semiconductor&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=Mexico+nearshoring+chips+OR+electronics&hl=en&gl=US&ceid=US:en",
+    # Malaysia semiconductors (for bilateral context)
+    "https://news.google.com/rss/search?q=Malaysia+semiconductor+OSAT+OR+packaging&hl=en&gl=US&ceid=US:en",
+    # Global semiconductor supply chain
+    "https://news.google.com/rss/search?q=semiconductor+nearshoring+OR+reshoring+Latin+America&hl=en&gl=US&ceid=US:en",
+    "https://news.google.com/rss/search?q=CHIPS+Act+OR+semiconductor+trade+policy&hl=en&gl=US&ceid=US:en",
+]
+
+NEWSAPI_QUERIES = [
+    "Mexico semiconductor",
+    "Mexico chip nearshoring",
+    "Malaysia semiconductor",
+    "semiconductor supply chain ASEAN Latin America",
+]
+
+
+def fetch_google_news() -> list[dict]:
+    """Fetch articles from Google News RSS feeds."""
+    articles = []
+    seen_titles = set()
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+    }
+
+    for feed_url in GOOGLE_NEWS_FEEDS:
+        try:
+            resp = requests.get(feed_url, headers=headers, timeout=15)
+            feed = feedparser.parse(resp.text)
+            for entry in feed.entries[:10]:
+                title = entry.get("title", "").strip()
+                title_key = re.sub(r"\s+", " ", title.lower())[:80]
+                if title_key in seen_titles:
+                    continue
+                seen_titles.add(title_key)
+
+                source = "Unknown"
+                if " - " in title:
+                    parts = title.rsplit(" - ", 1)
+                    title = parts[0].strip()
+                    source = parts[1].strip()
+
+                articles.append({
+                    "title": title,
+                    "source": source,
+                    "url": entry.get("link", ""),
+                    "published": entry.get("published", ""),
+                    "origin": "google_news",
+                })
+        except Exception as e:
+            print(f"[news] Warning: Failed to fetch {feed_url[:60]}... — {e}")
+
+    return articles
+
+
+def fetch_newsapi() -> list[dict]:
+    """Fetch articles from NewsAPI (if key is available)."""
+    api_key = os.getenv("NEWSAPI_KEY")
+    if not api_key:
+        return []
+
+    articles = []
+    seen_titles = set()
+
+    for query in NEWSAPI_QUERIES:
+        try:
+            resp = requests.get(
+                "https://newsapi.org/v2/everything",
+                params={
+                    "q": query,
+                    "from": YESTERDAY_ISO,
+                    "to": TODAY_ISO,
+                    "sortBy": "relevancy",
+                    "pageSize": 10,
+                    "apiKey": api_key,
+                },
+                timeout=15,
+            )
+            data = resp.json()
+            for art in data.get("articles", []):
+                title = art.get("title", "").strip()
+                title_key = re.sub(r"\s+", " ", title.lower())[:80]
+                if title_key in seen_titles:
+                    continue
+                seen_titles.add(title_key)
+
+                articles.append({
+                    "title": title,
+                    "source": art.get("source", {}).get("name", "Unknown"),
+                    "description": art.get("description", ""),
+                    "url": art.get("url", ""),
+                    "published": art.get("publishedAt", ""),
+                    "origin": "newsapi",
+                })
+        except Exception as e:
+            print(f"[newsapi] Warning: Query '{query}' failed — {e}")
+
+    return articles
+
+
+def fetch_all_news() -> list[dict]:
+    """Combine all news sources and deduplicate."""
+    google = fetch_google_news()
+    newsapi = fetch_newsapi()
+    all_articles = google + newsapi
+
+    print(f"[news] Fetched {len(google)} from Google News, {len(newsapi)} from NewsAPI")
+    print(f"[news] Total unique articles: {len(all_articles)}")
+    return all_articles
+
+
+# ── Background Research Data ──────────────────────────────────────────────────
 
 RESEARCH_CONTEXT = """
 ## VERIFIED RESEARCH DATA — Mexico's Semiconductor Industry (March 2026)
@@ -147,11 +276,14 @@ NOTE: No major Mexican-owned semiconductor companies exist yet. The Kutsari init
 """
 
 
-ANALYSIS_PROMPT = """You are an intelligence analyst preparing a special report on Mexico's semiconductor
-industry for the Mexican Ambassador to Malaysia. Write the report IN SPANISH.
+ANALYSIS_PROMPT = """You are an intelligence analyst preparing a DAILY semiconductor intelligence
+report for the Mexican Ambassador to Malaysia. Write the report IN SPANISH.
 
-Using the research data provided, produce a structured JSON report. This is a COMPREHENSIVE
-BRIEFING, not a daily news digest — it should read like a strategic intelligence product.
+You have two inputs:
+1. TODAY'S NEWS — fresh articles from today about semiconductors, Mexico nearshoring, Malaysia chips, and global supply chain developments.
+2. BACKGROUND RESEARCH — standing reference data on Mexico's semiconductor ecosystem (companies, states, policies, bilateral data with Malaysia).
+
+Produce a structured JSON report that leads with what's NEW today, contextualized by the background data.
 
 ## Output valid JSON with this exact structure:
 
@@ -162,15 +294,15 @@ BRIEFING, not a daily news digest — it should read like a strategic intelligen
     {{"value": "130K", "label": "Ingenieros/año"}}
   ],
 
-  "overview": "2-3 sentence executive overview in Spanish of Mexico's semiconductor landscape and the nearshoring opportunity.",
+  "overview": "2-3 sentence executive overview in Spanish. Lead with the most important news developments today, then frame them within Mexico's semiconductor landscape.",
 
-  "companies_intro": "1 sentence in Spanish introducing the companies section.",
+  "companies_intro": "1 sentence in Spanish. If today's news mentions specific companies, highlight that; otherwise introduce the section normally.",
 
   "companies": [
     {{
       "name": "Company Name",
       "location": "City, State",
-      "description": "1 concise sentence in Spanish about what they do in Mexico and their scale.",
+      "description": "1 concise sentence in Spanish. Incorporate any fresh news about this company if available, otherwise use background data.",
       "tags": [{{"label": "Diseño", "class": ""}}, {{"label": "IED USD 900M", "class": "investment"}}]
     }}
   ],
@@ -181,7 +313,7 @@ BRIEFING, not a daily news digest — it should read like a strategic intelligen
     {{
       "name": "State Name",
       "nickname": "Optional nickname like Silicon Valley de México",
-      "description": "1-2 sentences in Spanish about the state's semiconductor ecosystem.",
+      "description": "1-2 sentences in Spanish about the state's semiconductor ecosystem. Incorporate any fresh news.",
       "fdi": "USD 3.82 mil millones",
       "tier": ""
     }}
@@ -189,13 +321,13 @@ BRIEFING, not a daily news digest — it should read like a strategic intelligen
 
   "policies": [
     {{
-      "date": "Enero 2025",
+      "date": "Marzo 2026 (or relevant date)",
       "title": "Policy title in Spanish",
-      "description": "1-2 sentences in Spanish explaining the policy and its impact."
+      "description": "1-2 sentences in Spanish. Prioritize NEW policy developments from today's news; include standing policies as context."
     }}
   ],
 
-  "bilateral_intro": "2 sentences in Spanish about why Mexico-Malaysia semiconductor cooperation matters.",
+  "bilateral_intro": "2 sentences in Spanish about why Mexico-Malaysia semiconductor cooperation matters, referencing any fresh developments.",
 
   "opportunities": [
     {{
@@ -209,37 +341,55 @@ BRIEFING, not a daily news digest — it should read like a strategic intelligen
       "icon": "⚠️",
       "level": "red or '' (amber)",
       "title": "Risk title in Spanish",
-      "text": "1-2 sentences explaining the risk."
+      "text": "1-2 sentences explaining the risk. Flag any NEW risks from today's news."
     }}
   ]
 }}
 
 ## Guidelines:
 - Write ALL content in Spanish (professional diplomatic register)
-- Include the 6 most important companies (prioritize those with largest investments)
+- PRIORITIZE today's news — the report should feel fresh and timely, not like a static reference
+- Use background data to contextualize and enrich the news, not as the main content
+- If there's very little semiconductor news today, note that and focus on the most relevant background + broader trends
+- Include the 6 most important companies (prioritize any with fresh news, then largest investments)
 - Include 5 states (top hubs first, then 1-2 emerging)
 - For states, use tier "" for top hubs and tier "tier2" for emerging ones
-- Include 3-4 government policies/initiatives
+- Include 3-4 policies (prioritize new developments)
 - Include 3-4 bilateral opportunities (focus on complementarity with Malaysia)
 - Include 3-4 risk factors
 - Tag classes for companies: "" (default green) for design/R&D, "foreign" (blue) for manufacturing, "investment" (red) for major investments
 - Be specific with numbers, data, and company details
 - Keep ALL descriptions concise: 1-2 sentences max per item
-- Keep company descriptions to 1 sentence each
-- Keep state descriptions to 1-2 sentences each
 - RETURN ONLY VALID JSON, no markdown fences
 
-## Research Data:
+## TODAY'S NEWS:
+
+{articles}
+
+## BACKGROUND RESEARCH DATA:
 
 {research}
 """
 
 
-def generate_report() -> dict:
-    """Use Claude to analyze research and produce structured report."""
+def generate_report(articles: list[dict]) -> dict:
+    """Use Claude to analyze fresh news + background research and produce structured report."""
     client = anthropic.Anthropic()
 
-    prompt = ANALYSIS_PROMPT.format(research=RESEARCH_CONTEXT)
+    # Format articles for the prompt
+    articles_text = ""
+    for i, art in enumerate(articles[:40], 1):
+        desc = art.get("description", "")
+        articles_text += f"\n[{i}] {art['title']}\n"
+        articles_text += f"    Source: {art['source']}\n"
+        if desc:
+            articles_text += f"    Description: {desc}\n"
+        articles_text += f"    Published: {art.get('published', 'Unknown')}\n"
+
+    if not articles_text.strip():
+        articles_text = "(No fresh semiconductor news found today. Generate the report using background data and note the quiet news day.)"
+
+    prompt = ANALYSIS_PROMPT.format(articles=articles_text, research=RESEARCH_CONTEXT)
 
     print("[claude] Generating semiconductor intelligence report...")
     message = client.messages.create(
@@ -294,7 +444,7 @@ def send_email(html_body: str) -> bool:
         return False
 
     to_addrs = [a.strip() for a in to_raw.split(",") if a.strip()]
-    subject = f"🇲🇽 Informe Especial — Semiconductores en México"
+    subject = f"🇲🇽 Semiconductores en México — {TODAY}"
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
@@ -322,31 +472,34 @@ def main():
     args = parser.parse_args()
 
     print(f"{'='*55}")
-    print(f"  Informe Especial: Semiconductores en México")
+    print(f"  Informe Diario: Semiconductores en México")
     print(f"  {TODAY}")
     print(f"{'='*55}\n")
 
-    # 1. Generate report with Claude
-    report = generate_report()
+    # 1. Fetch fresh news
+    articles = fetch_all_news()
+
+    # 2. Generate report with Claude (fresh news + background data)
+    report = generate_report(articles)
     if not report:
         print("[error] Failed to generate report.")
         return
 
-    # 2. Render HTML
+    # 3. Render HTML
     html = render_html(report)
 
-    # 3. Save preview
+    # 4. Save preview
     preview_path = OUTPUT_DIR / f"semiconductores-{TODAY_ISO}.html"
     preview_path.write_text(html, encoding="utf-8")
     print(f"[preview] Saved to {preview_path}")
 
-    # 4. Send email (unless preview-only)
+    # 5. Send email (unless preview-only)
     if not args.preview:
         send_email(html)
     else:
         print("[preview] Preview mode — email not sent.")
 
-    # 5. Copy to docs/ for GitHub Pages
+    # 6. Copy to docs/ for GitHub Pages
     docs_path = SCRIPT_DIR / "docs" / "semiconductores.html"
     docs_path.write_text(html, encoding="utf-8")
     print(f"[docs] Saved to {docs_path}")
