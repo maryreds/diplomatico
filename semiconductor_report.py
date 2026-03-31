@@ -20,7 +20,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 
-import anthropic
+from openai import OpenAI
 import feedparser
 import requests
 from dotenv import load_dotenv
@@ -374,7 +374,7 @@ Produce a structured JSON report that leads with what's NEW today, contextualize
 
 def generate_report(articles: list[dict]) -> dict:
     """Use Claude to analyze fresh news + background research and produce structured report."""
-    client = anthropic.Anthropic()
+    client = OpenAI()
 
     # Format articles for the prompt
     articles_text = ""
@@ -391,22 +391,22 @@ def generate_report(articles: list[dict]) -> dict:
 
     prompt = ANALYSIS_PROMPT.format(articles=articles_text, research=RESEARCH_CONTEXT)
 
-    print("[claude] Generating semiconductor intelligence report...")
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
+    print("[openai] Generating semiconductor intelligence report...")
+    message = client.chat.completions.create(
+        model="gpt-4o",
         max_tokens=8192,
         messages=[{"role": "user", "content": prompt}],
     )
 
-    response_text = message.content[0].text.strip()
+    response_text = message.choices[0].message.content.strip()
     response_text = re.sub(r"^```json\s*", "", response_text)
     response_text = re.sub(r"\s*```$", "", response_text)
 
     try:
         return json.loads(response_text)
     except json.JSONDecodeError as e:
-        print(f"[claude] Warning: Failed to parse JSON — {e}")
-        print(f"[claude] Raw response:\n{response_text[:500]}")
+        print(f"[openai] Warning: Failed to parse JSON — {e}")
+        print(f"[openai] Raw response:\n{response_text[:500]}")
         return {}
 
 
