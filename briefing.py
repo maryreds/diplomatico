@@ -243,6 +243,9 @@ a structured briefing.
 - Group stories into 3-5 categories maximum
 - If there's very little news, note that in the summary and include broader ASEAN-LatAm context
 - Write in English but feel free to include key Spanish terms where appropriate
+- Be thorough and detailed — include ALL relevant stories, not just the top few
+- Each story summary should be a full 2-3 sentences with specific details, names, and figures
+- The executive summary should be a substantive 3-4 sentence paragraph
 - RETURN ONLY VALID JSON, no markdown code fences
 
 ## Articles to analyze:
