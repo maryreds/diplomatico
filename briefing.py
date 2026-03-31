@@ -2,7 +2,7 @@
 briefing.py — Daily Diplomatic Briefing Digest
 
 Aggregates Mexico-Malaysia bilateral news, FX rates, and regional context,
-then uses Claude to produce an executive summary and priority alerts.
+then uses GPT-4o to produce an executive summary and priority alerts.
 Sends a beautiful HTML email.
 
 Usage:
@@ -20,7 +20,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from pathlib import Path
 
-import anthropic
+from openai import OpenAI
 import feedparser
 import requests
 from dotenv import load_dotenv
@@ -200,7 +200,7 @@ def fetch_fx_rates() -> list[dict]:
     return rates
 
 
-# ── Claude Summarization ───────────────────────────────────────────────────────
+# ── OpenAI Summarization ──────────────────────────────────────────────────────
 
 BRIEFING_PROMPT = """You are a diplomatic intelligence analyst preparing a daily briefing
 for the Mexican Ambassador to Malaysia. Analyze the following news articles and produce
@@ -252,8 +252,8 @@ a structured briefing.
 
 
 def analyze_with_claude(articles: list[dict]) -> dict:
-    """Send articles to Claude for analysis and structuring."""
-    client = anthropic.Anthropic()
+    """Send articles to GPT-4o for analysis and structuring."""
+    client = OpenAI()
 
     # Format articles for the prompt
     articles_text = ""
@@ -270,14 +270,14 @@ def analyze_with_claude(articles: list[dict]) -> dict:
 
     prompt = BRIEFING_PROMPT.format(articles=articles_text)
 
-    print("[claude] Analyzing articles...")
-    message = client.messages.create(
-        model="claude-sonnet-4-6",
+    print("[openai] Analyzing articles...")
+    response = client.chat.completions.create(
+        model="gpt-4o",
         max_tokens=8192,
         messages=[{"role": "user", "content": prompt}],
     )
 
-    response_text = message.content[0].text.strip()
+    response_text = response.choices[0].message.content.strip()
 
     # Clean potential markdown fences
     response_text = re.sub(r"^```json\s*", "", response_text)
@@ -286,8 +286,8 @@ def analyze_with_claude(articles: list[dict]) -> dict:
     try:
         return json.loads(response_text)
     except json.JSONDecodeError as e:
-        print(f"[claude] Warning: Failed to parse JSON — {e}")
-        print(f"[claude] Raw response:\n{response_text[:500]}")
+        print(f"[openai] Warning: Failed to parse JSON — {e}")
+        print(f"[openai] Raw response:\n{response_text[:500]}")
         return {
             "executive_summary": "Unable to parse briefing. Please check the raw output.",
             "alerts": [],
@@ -373,7 +373,7 @@ def main():
     # 2. Fetch FX rates
     rates = fetch_fx_rates()
 
-    # 3. Analyze with Claude
+    # 3. Analyze with GPT-4o
     briefing = analyze_with_claude(articles)
 
     # 4. Render HTML
